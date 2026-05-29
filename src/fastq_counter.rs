@@ -1,8 +1,12 @@
 use ahash::AHashMap;
 use clap::{Parser, Subcommand};
 use flate2::read::MultiGzDecoder;
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+
+/// Number of FASTQ records per batch handed off to the worker pool.
+const BATCH_SIZE: usize = 50_000;
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -49,6 +53,10 @@ struct CountArgs {
     /// Output TSV file. Writes to stdout when omitted.
     #[arg(short, long)]
     output: Option<String>,
+
+    /// Number of worker threads for counting (default: all logical CPUs).
+    #[arg(short = 't', long)]
+    threads: Option<usize>,
 }
 
 #[derive(Parser, Debug)]
@@ -210,30 +218,94 @@ fn count_paired(
     trim_stop: Option<&str>,
     trim_length: Option<usize>,
 ) -> io::Result<Vec<CountEntry>> {
-    let mut iter1 = FastqIter::new(open_reader(r1_path)?);
-    let mut iter2 = FastqIter::new(open_reader(r2_path)?);
-
-    let mut counts: AHashMap<(String, String), u64> = AHashMap::new();
-    let mut names: AHashMap<(String, String), (String, String)> = AHashMap::new();
-
     eprintln!("Counting paired reads: {r1_path} + {r2_path}");
 
-    loop {
-        match (iter1.next_record(), iter2.next_record()) {
-            (Some((n1, s1)), Some((n2, s2))) => {
-                let t1 = trim_sequence(&s1, trim_start, trim_stop, trim_length);
-                let t2 = trim_sequence(&s2, trim_start, trim_stop, trim_length);
-                if t1.is_empty() || t2.is_empty() {
-                    continue;
+    // --- Reader thread: reads R1+R2 in lockstep, sends batches via channel ---
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<(String, String, String, String)>>(16);
+    let r1_owned = r1_path.to_owned();
+    let r2_owned = r2_path.to_owned();
+
+    let reader = std::thread::spawn(move || -> io::Result<()> {
+        let mut iter1 = FastqIter::new(open_reader(&r1_owned)?);
+        let mut iter2 = FastqIter::new(open_reader(&r2_owned)?);
+        let mut batch: Vec<(String, String, String, String)> =
+            Vec::with_capacity(BATCH_SIZE);
+        loop {
+            match (iter1.next_record(), iter2.next_record()) {
+                (Some((n1, s1)), Some((n2, s2))) => {
+                    batch.push((n1, s1, n2, s2));
+                    if batch.len() >= BATCH_SIZE {
+                        if tx
+                            .send(std::mem::replace(
+                                &mut batch,
+                                Vec::with_capacity(BATCH_SIZE),
+                            ))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
-                let key = (t1.to_owned(), t2.to_owned());
-                *counts.entry(key.clone()).or_insert(0) += 1;
-                names.entry(key).or_insert((n1, n2));
+                (None, None) => break,
+                _ => panic!("R1 and R2 have different numbers of records"),
             }
-            (None, None) => break,
-            _ => panic!("R1 and R2 have different numbers of records"),
         }
-    }
+        if !batch.is_empty() {
+            let _ = tx.send(batch);
+        }
+        Ok(())
+    });
+
+    let batches: Vec<Vec<(String, String, String, String)>> = rx.iter().collect();
+    reader.join().unwrap()?;
+
+    // --- Worker pool: parallel fold over batches, then merge ---
+    let trim_start_s = trim_start.map(str::to_owned);
+    let trim_stop_s = trim_stop.map(str::to_owned);
+
+    type PairedMap = AHashMap<(String, String), u64>;
+    type PairedNames = AHashMap<(String, String), (String, String)>;
+
+    let (counts, mut names): (PairedMap, PairedNames) = batches
+        .into_par_iter()
+        .fold(
+            || (PairedMap::new(), PairedNames::new()),
+            |(mut counts, mut names), batch| {
+                for (n1, s1, n2, s2) in batch {
+                    let t1 = trim_sequence(
+                        &s1,
+                        trim_start_s.as_deref(),
+                        trim_stop_s.as_deref(),
+                        trim_length,
+                    );
+                    let t2 = trim_sequence(
+                        &s2,
+                        trim_start_s.as_deref(),
+                        trim_stop_s.as_deref(),
+                        trim_length,
+                    );
+                    if t1.is_empty() || t2.is_empty() {
+                        continue;
+                    }
+                    let key = (t1.to_owned(), t2.to_owned());
+                    *counts.entry(key.clone()).or_insert(0) += 1;
+                    names.entry(key).or_insert((n1, n2));
+                }
+                (counts, names)
+            },
+        )
+        .reduce(
+            || (PairedMap::new(), PairedNames::new()),
+            |(mut ca, mut na), (cb, nb)| {
+                for (k, v) in cb {
+                    *ca.entry(k).or_insert(0) += v;
+                }
+                for (k, v) in nb {
+                    na.entry(k).or_insert(v);
+                }
+                (ca, na)
+            },
+        );
 
     let mut result: Vec<CountEntry> = counts
         .into_iter()
@@ -264,22 +336,79 @@ fn count_single(
     trim_stop: Option<&str>,
     trim_length: Option<usize>,
 ) -> io::Result<Vec<CountEntry>> {
-    let mut iter = FastqIter::new(open_reader(r1_path)?);
-
-    let mut counts: AHashMap<String, u64> = AHashMap::new();
-    let mut names: AHashMap<String, String> = AHashMap::new();
-
     eprintln!("Counting single-end reads: {r1_path}");
 
-    while let Some((name, seq)) = iter.next_record() {
-        let t = trim_sequence(&seq, trim_start, trim_stop, trim_length);
-        if t.is_empty() {
-            continue;
+    // --- Reader thread: reads records and sends batches via channel ---
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<(String, String)>>(16);
+    let r1_owned = r1_path.to_owned();
+
+    let reader = std::thread::spawn(move || -> io::Result<()> {
+        let mut iter = FastqIter::new(open_reader(&r1_owned)?);
+        let mut batch: Vec<(String, String)> = Vec::with_capacity(BATCH_SIZE);
+        while let Some(rec) = iter.next_record() {
+            batch.push(rec);
+            if batch.len() >= BATCH_SIZE {
+                if tx
+                    .send(std::mem::replace(
+                        &mut batch,
+                        Vec::with_capacity(BATCH_SIZE),
+                    ))
+                    .is_err()
+                {
+                    break;
+                }
+            }
         }
-        let key = t.to_owned();
-        *counts.entry(key.clone()).or_insert(0) += 1;
-        names.entry(key).or_insert(name);
-    }
+        if !batch.is_empty() {
+            let _ = tx.send(batch);
+        }
+        Ok(())
+    });
+
+    let batches: Vec<Vec<(String, String)>> = rx.iter().collect();
+    reader.join().unwrap()?;
+
+    // --- Worker pool: parallel fold over batches, then merge ---
+    let trim_start_s = trim_start.map(str::to_owned);
+    let trim_stop_s = trim_stop.map(str::to_owned);
+
+    type SingleMap = AHashMap<String, u64>;
+    type SingleNames = AHashMap<String, String>;
+
+    let (counts, mut names): (SingleMap, SingleNames) = batches
+        .into_par_iter()
+        .fold(
+            || (SingleMap::new(), SingleNames::new()),
+            |(mut counts, mut names), batch| {
+                for (name, seq) in batch {
+                    let t = trim_sequence(
+                        &seq,
+                        trim_start_s.as_deref(),
+                        trim_stop_s.as_deref(),
+                        trim_length,
+                    );
+                    if t.is_empty() {
+                        continue;
+                    }
+                    let key = t.to_owned();
+                    *counts.entry(key.clone()).or_insert(0) += 1;
+                    names.entry(key).or_insert(name);
+                }
+                (counts, names)
+            },
+        )
+        .reduce(
+            || (SingleMap::new(), SingleNames::new()),
+            |(mut ca, mut na), (cb, nb)| {
+                for (k, v) in cb {
+                    *ca.entry(k).or_insert(0) += v;
+                }
+                for (k, v) in nb {
+                    na.entry(k).or_insert(v);
+                }
+                (ca, na)
+            },
+        );
 
     let mut result: Vec<CountEntry> = counts
         .into_iter()
@@ -341,6 +470,13 @@ fn make_writer(path: &Option<String>) -> io::Result<Box<dyn Write>> {
 ////////////////////////////////////////////////////////////////////////////////
 
 fn run_count(args: &CountArgs) -> io::Result<()> {
+    if let Some(n) = args.threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build_global()
+            .ok();
+    }
+
     let trim_start = args.trim_start.as_deref();
     let trim_stop = args.trim_stop.as_deref();
     let trim_length = args.trim_length;
