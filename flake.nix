@@ -13,11 +13,15 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {inherit system;};
+
+      version =
+        if self ? rev
+        then builtins.substring 0 8 self.rev
+        else "dev";
     in {
-      # 📦 Build dein Rust binary
       packages.default = pkgs.rustPlatform.buildRustPackage {
         pname = "mmfqcount";
-        version = "0.1.0";
+        inherit version;
 
         src = self;
 
@@ -29,26 +33,17 @@
           pkg-config
         ];
 
-        buildInputs = with pkgs; [
-          # falls du später z.B. openssl brauchst:
-          # openssl
-        ];
-
         meta = with pkgs.lib; {
           description = "FASTQ read counter tool";
-          license = licenses.mit;
           platforms = platforms.linux;
-          mainProgram = "mmfqcount";
         };
       };
 
-      # ▶ CLI run ohne install
       apps.default = {
         type = "app";
         program = "${self.packages.${system}.default}/bin/mmfqcount";
       };
 
-      # 🧪 Dev environment (wie venv + pytest + IDE)
       devShells.default = pkgs.mkShell {
         packages = with pkgs; [
           cargo
@@ -58,10 +53,6 @@
           rust-analyzer
           pkg-config
         ];
-
-        shellHook = ''
-          echo "mmfqcount dev shell ready"
-        '';
       };
     });
 }
