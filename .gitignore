@@ -1,2 +1,6 @@
 # target
 target/
+bench_results.json
+bench_results.md
+r1.fastq
+r2.fastq
