@@ -412,7 +412,6 @@ fn run_match(args: &MatchArgs) -> io::Result<()> {
     let c_count = col_idx(&count_header, "Count")?;
 
     let p_seq = col_idx(&pred_header, &args.seq_col)?;
-    let p_id = col_idx(&pred_header, &args.id_col)?;
     let p_r2 = args
         .r2_col
         .as_deref()

@@ -5,10 +5,11 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
-// Path to the compiled binary injected by Cargo at test-build time.
-const BIN: &str = env!("CARGO_BIN_EXE_fastq_counter");
+use tempfile;
+
+use assert_cmd::Command;
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Helpers
@@ -95,11 +96,10 @@ fn count_single_basic() {
     let r1 = write(dir.path(), "r1.fastq", SE_FASTQ);
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args(["count", "--r1", &r1, "--output", &out])
-        .status()
-        .unwrap();
-    assert!(status.success(), "binary exited with non-zero status");
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -138,11 +138,10 @@ fn count_paired_basic() {
     let r2 = write(dir.path(), "r2.fastq", PE_R2);
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args(["count", "--r1", &r1, "--r2", &r2, "--output", &out])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -171,16 +170,15 @@ fn count_single_trim_start() {
     let r1 = write(dir.path(), "r1.fastq", SE_ADAPTER_FASTQ);
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "count",
             "--r1", &r1,
             "--trim-start", "ACGT",
             "--output", &out,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -204,7 +202,7 @@ fn count_single_trim_start_and_length() {
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
     // trim adapter, then keep 4 bases → strips the "ACGT" prefix leaving payload
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "count",
             "--r1", &r1,
@@ -212,9 +210,8 @@ fn count_single_trim_start_and_length() {
             "--trim-length", "8",   // keep full 8-base trimmed sequence
             "--output", &out,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -239,16 +236,15 @@ fn count_single_trim_stop() {
     let r1 = write(dir.path(), "r1.fastq", fastq);
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "count",
             "--r1", &r1,
             "--trim-stop", "STOP",
             "--output", &out,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -274,7 +270,7 @@ fn match_single_basic() {
     let matched = dir.path().join("matched.tsv").to_string_lossy().into_owned();
     let unmatched = dir.path().join("unmatched.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "match",
             "--counts",     &counts,
@@ -284,9 +280,8 @@ fn match_single_basic() {
             "--output",     &matched,
             "--unmatched",  &unmatched,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     // Matched output
     let mc = fs::read_to_string(&matched).unwrap();
@@ -334,7 +329,7 @@ fn match_paired_basic() {
     let matched = dir.path().join("matched.tsv").to_string_lossy().into_owned();
     let unmatched = dir.path().join("unmatched.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "match",
             "--counts",     &counts,
@@ -345,9 +340,8 @@ fn match_paired_basic() {
             "--output",     &matched,
             "--unmatched",  &unmatched,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let mc = fs::read_to_string(&matched).unwrap();
     let (mh, mr) = parse_tsv(&mc);
@@ -379,7 +373,7 @@ fn match_zero_count_predefined() {
     let predefined = write(dir.path(), "pred.tsv", pred_tsv);
     let matched = dir.path().join("matched.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "match",
             "--counts",     &counts,
@@ -388,9 +382,8 @@ fn match_zero_count_predefined() {
             "--id-col",     "Name",
             "--output",     &matched,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let mc = fs::read_to_string(&matched).unwrap();
     let (mh, mr) = parse_tsv(&mc);
@@ -412,10 +405,10 @@ fn count_single_all_identical() {
     let r1 = write(dir.path(), "r1.fastq", fastq);
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
-    Command::new(BIN)
+    Command::cargo_bin("mmfqcount").unwrap()
         .args(["count", "--r1", &r1, "--output", &out])
-        .status()
-        .unwrap();
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -445,15 +438,14 @@ fn count_single_gzip() {
         enc.finish().unwrap();
     }
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "count",
             "--r1",    gz_path.to_str().unwrap(),
             "--output", &out,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
