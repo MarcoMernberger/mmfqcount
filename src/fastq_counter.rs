@@ -569,24 +569,28 @@ fn write_count_tsv(
             writeln!(w, "{}", row.join("\t"))?;
         }
     } else {
-        // Original behaviour — no split_by.
+        // No split_by — one Count + Frequency column for all reads.
+        let total: u64 = entries.iter().map(|e| e.count).sum();
         if paired {
-            writeln!(w, "R1\tR2\tCount\tR1 Name\tR2 Name")?;
+            writeln!(w, "R1\tR2\tCount\tFrequency\tR1 Name\tR2 Name")?;
             for e in entries {
+                let freq = if total > 0 { e.count as f64 / total as f64 } else { 0.0 };
                 writeln!(
                     w,
-                    "{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{:.6}\t{}\t{}",
                     e.r1,
                     e.r2.as_deref().unwrap_or(""),
                     e.count,
+                    freq,
                     e.r1_name,
                     e.r2_name.as_deref().unwrap_or("")
                 )?;
             }
         } else {
-            writeln!(w, "R1\tCount\tR1 Name")?;
+            writeln!(w, "R1\tCount\tFrequency\tR1 Name")?;
             for e in entries {
-                writeln!(w, "{}\t{}\t{}", e.r1, e.count, e.r1_name)?;
+                let freq = if total > 0 { e.count as f64 / total as f64 } else { 0.0 };
+                writeln!(w, "{}\t{}\t{:.6}\t{}", e.r1, e.count, freq, e.r1_name)?;
             }
         }
     }

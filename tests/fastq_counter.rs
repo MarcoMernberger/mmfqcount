@@ -105,7 +105,7 @@ Command::cargo_bin("mmfqcount").unwrap()
     let (header, rows) = parse_tsv(&content);
 
     // Header check
-    assert_eq!(header, ["R1", "Count", "R1 Name"]);
+    assert_eq!(header, ["R1", "Count", "Frequency", "R1 Name"]);
 
     // Correct number of unique sequences
     assert_eq!(rows.len(), 3, "expected 3 unique sequences");
@@ -146,7 +146,7 @@ Command::cargo_bin("mmfqcount").unwrap()
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
 
-    assert_eq!(header, ["R1", "R2", "Count", "R1 Name", "R2 Name"]);
+    assert_eq!(header, ["R1", "R2", "Count", "Frequency", "R1 Name", "R2 Name"]);
     assert_eq!(rows.len(), 3, "expected 3 unique pairs");
 
     // Sorted descending
