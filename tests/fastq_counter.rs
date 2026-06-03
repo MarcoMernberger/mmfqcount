@@ -455,3 +455,55 @@ Command::cargo_bin("mmfqcount").unwrap()
     assert_eq!(get(&header, &rows[0], "R1"), "AAAA");
     assert_eq!(get(&header, &rows[0], "Count"), "3");
 }
+
+// Test 11: count — single-end, --split-by tag
+
+#[test]
+fn count_single_split_by() {
+    // Reads carry |sgRNAid=X| tags in read names.
+    // AAAA: 2× sgA, 1× sgB  → total 3
+    // CCCC: 1× sgB           → total 1
+    let fastq = "\
+@read1|sgRNAid=sgA\nAAAA\n+\nIIII\n\
+@read2|sgRNAid=sgA\nAAAA\n+\nIIII\n\
+@read3|sgRNAid=sgB\nAAAA\n+\nIIII\n\
+@read4|sgRNAid=sgB\nCCCC\n+\nIIII\n";
+
+    let dir = tempfile::tempdir().unwrap();
+    let r1  = write(dir.path(), "r1.fastq", fastq);
+    let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
+
+    Command::cargo_bin("mmfqcount").unwrap()
+        .args(["count", "--r1", &r1, "--split-by", "sgRNAid", "--output", &out])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(&out).unwrap();
+    let (header, rows) = parse_tsv(&content);
+
+    // Header should contain per-tag columns (sorted tag values: sgA, sgB)
+    assert!(header.contains(&"Read Count (sgRNAid=sgA)".to_owned()));
+    assert!(header.contains(&"Read Count (sgRNAid=sgB)".to_owned()));
+    assert!(header.contains(&"Frequency (sgRNAid=sgA)".to_owned()));
+    assert!(header.contains(&"Frequency (sgRNAid=sgB)".to_owned()));
+
+    assert_eq!(rows.len(), 2, "expected 2 unique sequences");
+
+    // AAAA row: 2× sgA, 1× sgB
+    let aaaa = rows.iter().find(|r| get(&header, r, "R1") == "AAAA").unwrap();
+    assert_eq!(get(&header, aaaa, "Read Count (sgRNAid=sgA)"), "2");
+    assert_eq!(get(&header, aaaa, "Read Count (sgRNAid=sgB)"), "1");
+
+    // Frequency for sgA: 2 out of 2 sgA reads total → 1.0
+    let freq_a: f64 = get(&header, aaaa, "Frequency (sgRNAid=sgA)").parse().unwrap();
+    assert!((freq_a - 1.0).abs() < 1e-5, "freq_a={freq_a}");
+
+    // Frequency for sgB: AAAA gets 1 out of 2 sgB reads total → 0.5
+    let freq_b: f64 = get(&header, aaaa, "Frequency (sgRNAid=sgB)").parse().unwrap();
+    assert!((freq_b - 0.5).abs() < 1e-5, "freq_b={freq_b}");
+
+    // CCCC row: 0× sgA, 1× sgB
+    let cccc = rows.iter().find(|r| get(&header, r, "R1") == "CCCC").unwrap();
+    assert_eq!(get(&header, cccc, "Read Count (sgRNAid=sgA)"), "0");
+    assert_eq!(get(&header, cccc, "Read Count (sgRNAid=sgB)"), "1");
+}
