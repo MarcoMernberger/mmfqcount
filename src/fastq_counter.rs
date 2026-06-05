@@ -26,6 +26,15 @@ enum Command {
     Count(CountArgs),
     /// Match a counts TSV against a predefined-sequences TSV.
     Match(MatchArgs),
+    /// Print a machine-readable JSON description of all subcommands and their parameters.
+    Params(ParamsArgs),
+}
+
+#[derive(Parser, Debug)]
+struct ParamsArgs {
+    /// Write JSON to this file instead of stdout.
+    #[arg(short, long)]
+    output: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -504,8 +513,8 @@ fn write_count_tsv(
     mut w: Box<dyn Write>,
     entries: &[CountEntry],
     split_by: Option<&str>,
+    paired: bool,
 ) -> io::Result<()> {
-    let paired = entries.first().map_or(false, |e| e.r2.is_some());
 
     if let Some(tag_name) = split_by {
         // Collect all unique tag values across all entries, sorted.
@@ -635,7 +644,7 @@ fn run_count(args: &CountArgs) -> io::Result<()> {
         total
     );
 
-    write_count_tsv(make_writer(&args.output)?, &entries, split_by)?;
+    write_count_tsv(make_writer(&args.output)?, &entries, split_by, args.r2.is_some())?;
 
     if let Some(p) = &args.output {
         eprintln!("Written to {p}");
@@ -781,6 +790,196 @@ fn run_match(args: &MatchArgs) -> io::Result<()> {
 
 
 ////////////////////////////////////////////////////////////////////////////////
+// Params subcommand
+////////////////////////////////////////////////////////////////////////////////
+
+fn run_params(args: &ParamsArgs) -> io::Result<()> {
+    // Build the JSON description entirely with serde_json::json! macro —
+    // no extra derive macros needed on the main structs.
+    let doc = serde_json::json!({
+        "tool": "mmfqcount",
+        "version": env!("CARGO_PKG_VERSION"),
+        "description": "Count FASTQ read sequences by identity, with optional adapter trimming and tag-based splitting.",
+        "subcommands": [
+            {
+                "name": "count",
+                "description": "Count read sequences across one (single-end) or two (paired-end) FASTQs.",
+                "parameters": [
+                    {
+                        "name": "r1",
+                        "flags": ["--r1", "-1"],
+                        "type": "path",
+                        "required": true,
+                        "description": "R1 FASTQ file (plain or .gz)."
+                    },
+                    {
+                        "name": "r2",
+                        "flags": ["--r2", "-2"],
+                        "type": "path",
+                        "required": false,
+                        "description": "R2 FASTQ file (plain or .gz). Omit for single-end mode."
+                    },
+                    {
+                        "name": "output",
+                        "flags": ["--output", "-o"],
+                        "type": "path",
+                        "required": false,
+                        "description": "Output TSV file. Writes to stdout when omitted."
+                    },
+                    {
+                        "name": "trim_start",
+                        "flags": ["--trim-start"],
+                        "type": "string",
+                        "required": false,
+                        "description": "Trim read from the first occurrence of this k-mer (inclusive). Reads lacking the k-mer are discarded."
+                    },
+                    {
+                        "name": "trim_stop",
+                        "flags": ["--trim-stop"],
+                        "type": "string",
+                        "required": false,
+                        "description": "Trim read up to (exclusive) the last occurrence of this k-mer."
+                    },
+                    {
+                        "name": "trim_length",
+                        "flags": ["--trim-length"],
+                        "type": "integer",
+                        "required": false,
+                        "description": "Keep at most this many bases after adapter trimming."
+                    },
+                    {
+                        "name": "split_by",
+                        "flags": ["--split-by"],
+                        "type": "string",
+                        "required": false,
+                        "description": "Split counts by this tag in read names (e.g. 'sgRNAid'). The tag must appear as |TAG=VALUE| in the read name. Produces one 'Read Count (TAG=VALUE)' + 'Frequency (TAG=VALUE)' column pair per unique value."
+                    },
+                    {
+                        "name": "threads",
+                        "flags": ["--threads", "-t"],
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of worker threads (default: all logical CPUs)."
+                    }
+                ],
+                "output_format": {
+                    "type": "tsv",
+                    "modes": [
+                        {
+                            "condition": "single-end, no split_by",
+                            "columns": ["R1", "Count", "Frequency", "R1 Name"]
+                        },
+                        {
+                            "condition": "paired-end, no split_by",
+                            "columns": ["R1", "R2", "Count", "Frequency", "R1 Name", "R2 Name"]
+                        },
+                        {
+                            "condition": "single-end, with split_by TAG",
+                            "columns": ["R1", "Read Count (TAG=<value>)", "Frequency (TAG=<value>)", "...", "R1 Name"],
+                            "note": "One Read Count + Frequency column pair per unique tag value, sorted alphabetically."
+                        },
+                        {
+                            "condition": "paired-end, with split_by TAG",
+                            "columns": ["R1", "R2", "Read Count (TAG=<value>)", "Frequency (TAG=<value>)", "...", "R1 Name", "R2 Name"],
+                            "note": "One Read Count + Frequency column pair per unique tag value, sorted alphabetically."
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "match",
+                "description": "Match a counts TSV (from 'count') against a predefined-sequences TSV.",
+                "parameters": [
+                    {
+                        "name": "counts",
+                        "flags": ["--counts"],
+                        "type": "path",
+                        "required": true,
+                        "description": "Counts TSV produced by the 'count' subcommand."
+                    },
+                    {
+                        "name": "predefined",
+                        "flags": ["--predefined"],
+                        "type": "path",
+                        "required": true,
+                        "description": "Predefined-sequences TSV."
+                    },
+                    {
+                        "name": "seq_col",
+                        "flags": ["--seq-col"],
+                        "type": "string",
+                        "required": false,
+                        "default": "Sequence",
+                        "description": "Column in the predefined TSV holding the R1 sequence."
+                    },
+                    {
+                        "name": "r2_col",
+                        "flags": ["--r2-col"],
+                        "type": "string",
+                        "required": false,
+                        "description": "Column in the predefined TSV holding the R2 sequence (paired mode)."
+                    },
+                    {
+                        "name": "id_col",
+                        "flags": ["--id-col"],
+                        "type": "string",
+                        "required": false,
+                        "default": "Name",
+                        "description": "Column in the predefined TSV holding the sequence identifier."
+                    },
+                    {
+                        "name": "output",
+                        "flags": ["--output", "-o"],
+                        "type": "path",
+                        "required": false,
+                        "description": "Output TSV for matched sequences. Writes to stdout when omitted."
+                    },
+                    {
+                        "name": "unmatched",
+                        "flags": ["--unmatched"],
+                        "type": "path",
+                        "required": false,
+                        "description": "Output TSV for sequences that were counted but not found in the predefined list."
+                    }
+                ],
+                "output_format": {
+                    "type": "tsv",
+                    "note": "All columns from the predefined TSV are preserved; 'Read Count' and 'Frequency' columns are appended.",
+                    "appended_columns": ["Read Count", "Frequency"]
+                }
+            },
+            {
+                "name": "params",
+                "description": "Print this machine-readable JSON parameter specification.",
+                "parameters": [
+                    {
+                        "name": "output",
+                        "flags": ["--output", "-o"],
+                        "type": "path",
+                        "required": false,
+                        "description": "Write JSON to this file instead of stdout."
+                    }
+                ]
+            }
+        ]
+    });
+
+    let json_str = serde_json::to_string_pretty(&doc)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    match &args.output {
+        Some(path) => {
+            let mut f = File::create(path)?;
+            writeln!(f, "{json_str}")?;
+            eprintln!("Params written to {path}");
+        }
+        None => println!("{json_str}"),
+    }
+    Ok(())
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
 // Entry point
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -789,5 +988,6 @@ fn main() -> io::Result<()> {
     match &cli.command {
         Command::Count(args) => run_count(args),
         Command::Match(args) => run_match(args),
+        Command::Params(args) => run_params(args),
     }
 }
