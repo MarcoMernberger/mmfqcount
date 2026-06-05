@@ -69,7 +69,7 @@ struct CountArgs {
 
     /// Split counts by this tag in read names (e.g. "sgRNAid").
     /// The tag must appear as |TAG=VALUE| in the read name.
-    /// Produces one 'Read Count (TAG=VALUE)' + 'Frequency (TAG=VALUE)' column pair per unique value.
+    /// Produces one 'Count (TAG=VALUE)' + 'Frequency (TAG=VALUE)' column pair per unique value.
     #[arg(long)]
     split_by: Option<String>,
 }
@@ -545,7 +545,7 @@ fn write_count_tsv(
             vec!["R1".into()]
         };
         for tv in &all_tags {
-            header.push(format!("Read Count ({}={})", tag_name, tv));
+            header.push(format!("Count ({}={})", tag_name, tv));
             header.push(format!("Frequency ({}={})", tag_name, tv));
         }
         if paired {
@@ -729,7 +729,7 @@ fn run_match(args: &MatchArgs) -> io::Result<()> {
     let mut matched_writer = make_writer(&args.output)?;
     {
         let mut out_header = pred_header.clone();
-        out_header.extend(["Read Count".to_owned(), "Frequency".to_owned()]);
+        out_header.extend(["Count".to_owned(), "Frequency".to_owned()]);
         writeln!(matched_writer, "{}", out_header.join("\t"))?;
     }
 
@@ -852,7 +852,7 @@ fn run_params(args: &ParamsArgs) -> io::Result<()> {
                         "flags": ["--split-by"],
                         "type": "string",
                         "required": false,
-                        "description": "Split counts by this tag in read names (e.g. 'sgRNAid'). The tag must appear as |TAG=VALUE| in the read name. Produces one 'Read Count (TAG=VALUE)' + 'Frequency (TAG=VALUE)' column pair per unique value."
+                        "description": "Split counts by this tag in read names (e.g. 'sgRNAid'). The tag must appear as |TAG=VALUE| in the read name. Produces one 'Count (TAG=VALUE)' + 'Frequency (TAG=VALUE)' column pair per unique value."
                     },
                     {
                         "name": "threads",
@@ -875,13 +875,13 @@ fn run_params(args: &ParamsArgs) -> io::Result<()> {
                         },
                         {
                             "condition": "single-end, with split_by TAG",
-                            "columns": ["R1", "Read Count (TAG=<value>)", "Frequency (TAG=<value>)", "...", "R1 Name"],
-                            "note": "One Read Count + Frequency column pair per unique tag value, sorted alphabetically."
+                            "columns": ["R1", "Count (TAG=<value>)", "Frequency (TAG=<value>)", "...", "R1 Name"],
+                            "note": "One Count + Frequency column pair per unique tag value, sorted alphabetically."
                         },
                         {
                             "condition": "paired-end, with split_by TAG",
-                            "columns": ["R1", "R2", "Read Count (TAG=<value>)", "Frequency (TAG=<value>)", "...", "R1 Name", "R2 Name"],
-                            "note": "One Read Count + Frequency column pair per unique tag value, sorted alphabetically."
+                            "columns": ["R1", "R2", "Count (TAG=<value>)", "Frequency (TAG=<value>)", "...", "R1 Name", "R2 Name"],
+                            "note": "One Count + Frequency column pair per unique tag value, sorted alphabetically."
                         }
                     ]
                 }
@@ -944,8 +944,8 @@ fn run_params(args: &ParamsArgs) -> io::Result<()> {
                 ],
                 "output_format": {
                     "type": "tsv",
-                    "note": "All columns from the predefined TSV are preserved; 'Read Count' and 'Frequency' columns are appended.",
-                    "appended_columns": ["Read Count", "Frequency"]
+                    "note": "All columns from the predefined TSV are preserved; 'Count' and 'Frequency' columns are appended.",
+                    "appended_columns": ["Count", "Frequency"]
                 }
             },
             {

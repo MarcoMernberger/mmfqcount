@@ -291,18 +291,18 @@ Command::cargo_bin("mmfqcount").unwrap()
     assert_eq!(mr.len(), 2);
 
     // Extra columns appended
-    assert!(mh.contains(&"Read Count".to_owned()));
+    assert!(mh.contains(&"Count".to_owned()));
     assert!(mh.contains(&"Frequency".to_owned()));
 
     // seq_A: count 3 out of 5 total → frequency 0.6
     let seq_a = mr.iter().find(|r| get(&mh, r, "Name") == "seq_A").unwrap();
-    assert_eq!(get(&mh, seq_a, "Read Count"), "3");
+    assert_eq!(get(&mh, seq_a, "Count"), "3");
     let freq: f64 = get(&mh, seq_a, "Frequency").parse().unwrap();
     assert!((freq - 0.6).abs() < 1e-5, "frequency should be ~0.6, got {freq}");
 
     // seq_G: count 1 → frequency 0.2
     let seq_g = mr.iter().find(|r| get(&mh, r, "Name") == "seq_G").unwrap();
-    assert_eq!(get(&mh, seq_g, "Read Count"), "1");
+    assert_eq!(get(&mh, seq_g, "Count"), "1");
 
     // Unmatched output
     let uc = fs::read_to_string(&unmatched).unwrap();
@@ -348,7 +348,7 @@ Command::cargo_bin("mmfqcount").unwrap()
     assert_eq!(mr.len(), 2);
 
     let pair_a = mr.iter().find(|r| get(&mh, r, "Name") == "pair_A").unwrap();
-    assert_eq!(get(&mh, pair_a, "Read Count"), "3");
+    assert_eq!(get(&mh, pair_a, "Count"), "3");
     let freq: f64 = get(&mh, pair_a, "Frequency").parse().unwrap();
     assert!((freq - 0.6).abs() < 1e-5);
 
@@ -390,7 +390,7 @@ Command::cargo_bin("mmfqcount").unwrap()
 
     // Both rows present; ZZZZ has count 0 and frequency 0
     let seq_z = mr.iter().find(|r| get(&mh, r, "Name") == "seq_Z").unwrap();
-    assert_eq!(get(&mh, seq_z, "Read Count"), "0");
+    assert_eq!(get(&mh, seq_z, "Count"), "0");
     let freq: f64 = get(&mh, seq_z, "Frequency").parse().unwrap();
     assert_eq!(freq, 0.0);
 }
@@ -482,8 +482,8 @@ fn count_single_split_by() {
     let (header, rows) = parse_tsv(&content);
 
     // Header should contain per-tag columns (sorted tag values: sgA, sgB)
-    assert!(header.contains(&"Read Count (sgRNAid=sgA)".to_owned()));
-    assert!(header.contains(&"Read Count (sgRNAid=sgB)".to_owned()));
+    assert!(header.contains(&"Count (sgRNAid=sgA)".to_owned()));
+    assert!(header.contains(&"Count (sgRNAid=sgB)".to_owned()));
     assert!(header.contains(&"Frequency (sgRNAid=sgA)".to_owned()));
     assert!(header.contains(&"Frequency (sgRNAid=sgB)".to_owned()));
 
@@ -491,8 +491,8 @@ fn count_single_split_by() {
 
     // AAAA row: 2× sgA, 1× sgB
     let aaaa = rows.iter().find(|r| get(&header, r, "R1") == "AAAA").unwrap();
-    assert_eq!(get(&header, aaaa, "Read Count (sgRNAid=sgA)"), "2");
-    assert_eq!(get(&header, aaaa, "Read Count (sgRNAid=sgB)"), "1");
+    assert_eq!(get(&header, aaaa, "Count (sgRNAid=sgA)"), "2");
+    assert_eq!(get(&header, aaaa, "Count (sgRNAid=sgB)"), "1");
 
     // Frequency for sgA: 2 out of 2 sgA reads total → 1.0
     let freq_a: f64 = get(&header, aaaa, "Frequency (sgRNAid=sgA)").parse().unwrap();
@@ -504,6 +504,6 @@ fn count_single_split_by() {
 
     // CCCC row: 0× sgA, 1× sgB
     let cccc = rows.iter().find(|r| get(&header, r, "R1") == "CCCC").unwrap();
-    assert_eq!(get(&header, cccc, "Read Count (sgRNAid=sgA)"), "0");
-    assert_eq!(get(&header, cccc, "Read Count (sgRNAid=sgB)"), "1");
+    assert_eq!(get(&header, cccc, "Count (sgRNAid=sgA)"), "0");
+    assert_eq!(get(&header, cccc, "Count (sgRNAid=sgB)"), "1");
 }
