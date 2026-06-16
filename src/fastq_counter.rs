@@ -1,12 +1,12 @@
 use ahash::AHashMap;
 use clap::{Parser, Subcommand};
 use flate2::read::MultiGzDecoder;
-use rayon::prelude::*;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::sync::Arc;
 
-/// Number of FASTQ records per batch handed off to the worker pool.
-const BATCH_SIZE: usize = 50_000;
+/// Explosion guard: panic if unique key count exceeds this.
+const MAX_UNIQUE_KEYS: usize = 9_999_999;
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -63,15 +63,15 @@ struct CountArgs {
     #[arg(short, long)]
     output: Option<String>,
 
-    /// Number of worker threads for counting (default: all logical CPUs).
-    #[arg(short = 't', long)]
-    threads: Option<usize>,
-
     /// Split counts by this tag in read names (e.g. "sgRNAid").
     /// The tag must appear as |TAG=VALUE| in the read name.
-    /// Produces one 'Count (TAG=VALUE)' + 'Frequency (TAG=VALUE)' column pair per unique value.
+    /// Annotation column will contain the tag value, or "UNKNOWN" if absent.
     #[arg(long)]
     split_by: Option<String>,
+
+    /// Sort output by: count-desc (default), count-asc, sequence, annotation, none.
+    #[arg(long, default_value = "count-desc")]
+    sort_by: String,
 }
 
 #[derive(Parser, Debug)]
@@ -103,6 +103,16 @@ struct MatchArgs {
     /// Output TSV for unmatched (counted but not predefined) sequences.
     #[arg(long)]
     unmatched: Option<String>,
+}
+
+/// How to sort the output TSV rows.
+#[derive(Debug, Clone, Copy)]
+enum SortBy {
+    CountDesc,
+    CountAsc,
+    Sequence,
+    Annotation,
+    None,
 }
 
 
@@ -210,18 +220,20 @@ fn trim_sequence<'a>(
 
 
 ////////////////////////////////////////////////////////////////////////////////
-// Count data structure
+// Count data structures
 ////////////////////////////////////////////////////////////////////////////////
 
-struct CountEntry {
-    r1: String,
-    r2: Option<String>,
+/// Key: (R1_seq, R2_seq_or_empty, annotation).
+/// Arc<str> avoids repeated heap allocation for frequently-seen sequences.
+type Key = (Arc<str>, Arc<str>, Arc<str>);
+
+struct EntryValue {
     count: u64,
-    /// Per-tag-value counts; non-empty only when --split-by is used.
-    tag_counts: AHashMap<String, u64>,
-    r1_name: String,
-    r2_name: Option<String>,
+    r1_name: Arc<str>,
+    r2_name: Arc<str>,
 }
+
+type CountMap = AHashMap<Key, EntryValue>;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Tag extraction
@@ -254,6 +266,48 @@ fn extract_tag<'a>(name: &'a str, tag: &str) -> &'a str {
     ""
 }
 
+/// Derive the annotation string for a read.
+/// - With `--split-by TAG`: returns the tag value, or `"UNKNOWN"` if absent.
+/// - Without `--split-by`: returns `"ALL"`.
+fn extract_annotation<'a>(name: &'a str, split_by: Option<&str>) -> &'a str {
+    match split_by {
+        Some(tag) => {
+            let val = extract_tag(name, tag);
+            if val.is_empty() { "UNKNOWN" } else { val }
+        }
+        None => "ALL",
+    }
+}
+
+/// Build a `Key` from trimmed sequences and annotation.
+fn build_key(t1: &str, t2: &str, ann: &str) -> Key {
+    (Arc::from(t1), Arc::from(t2), Arc::from(ann))
+}
+
+/// Insert or increment an entry in `map`.
+/// Panics if the number of unique keys would exceed `MAX_UNIQUE_KEYS`.
+fn update_map(map: &mut CountMap, key: Key, r1_name: &str, r2_name: &str) {
+    if map.len() >= MAX_UNIQUE_KEYS && !map.contains_key(&key) {
+        panic!("Key explosion: >{MAX_UNIQUE_KEYS} unique (R1, R2, Annotation) combinations detected");
+    }
+    let entry = map.entry(key).or_insert_with(|| EntryValue {
+        count: 0,
+        r1_name: Arc::from(r1_name),
+        r2_name: Arc::from(r2_name),
+    });
+    entry.count += 1;
+}
+
+/// Sanity-check a raw sequence from the FASTQ parser.
+fn validate_record(seq: &str, name: &str, which: &str) {
+    assert!(!seq.is_empty(), "Empty {which} sequence for read: {name}");
+    assert!(
+        seq.len() < 10_000,
+        "Suspiciously long {which} sequence ({} bp) for read: {name}",
+        seq.len()
+    );
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Paired counting
@@ -266,125 +320,33 @@ fn count_paired(
     trim_stop: Option<&str>,
     trim_length: Option<usize>,
     split_by: Option<&str>,
-) -> io::Result<Vec<CountEntry>> {
+) -> io::Result<CountMap> {
     eprintln!("Counting paired reads: {r1_path} + {r2_path}");
 
-    // --- Reader thread: reads R1+R2 in lockstep, sends batches via channel ---
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<(String, String, String, String)>>(16);
-    let r1_owned = r1_path.to_owned();
-    let r2_owned = r2_path.to_owned();
+    let mut map: CountMap = AHashMap::with_capacity(4096);
+    let mut iter1 = FastqIter::new(open_reader(r1_path)?);
+    let mut iter2 = FastqIter::new(open_reader(r2_path)?);
 
-    let reader = std::thread::spawn(move || -> io::Result<()> {
-        let mut iter1 = FastqIter::new(open_reader(&r1_owned)?);
-        let mut iter2 = FastqIter::new(open_reader(&r2_owned)?);
-        let mut batch: Vec<(String, String, String, String)> =
-            Vec::with_capacity(BATCH_SIZE);
-        loop {
-            match (iter1.next_record(), iter2.next_record()) {
-                (Some((n1, s1)), Some((n2, s2))) => {
-                    batch.push((n1, s1, n2, s2));
-                    if batch.len() >= BATCH_SIZE {
-                        if tx
-                            .send(std::mem::replace(
-                                &mut batch,
-                                Vec::with_capacity(BATCH_SIZE),
-                            ))
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
+    loop {
+        match (iter1.next_record(), iter2.next_record()) {
+            (Some((n1, s1)), Some((n2, s2))) => {
+                validate_record(&s1, &n1, "R1");
+                validate_record(&s2, &n2, "R2");
+                let t1 = trim_sequence(&s1, trim_start, trim_stop, trim_length);
+                let t2 = trim_sequence(&s2, trim_start, trim_stop, trim_length);
+                if t1.is_empty() || t2.is_empty() {
+                    continue;
                 }
-                (None, None) => break,
-                _ => panic!("R1 and R2 have different numbers of records"),
+                let ann = extract_annotation(&n1, split_by);
+                let key = build_key(t1, t2, ann);
+                update_map(&mut map, key, &n1, &n2);
             }
+            (None, None) => break,
+            _ => panic!("R1 and R2 have different numbers of records"),
         }
-        if !batch.is_empty() {
-            let _ = tx.send(batch);
-        }
-        Ok(())
-    });
+    }
 
-    let batches: Vec<Vec<(String, String, String, String)>> = rx.iter().collect();
-    reader.join().unwrap()?;
-
-    // --- Worker pool: parallel fold over batches, then merge ---
-    let trim_start_s = trim_start.map(str::to_owned);
-    let trim_stop_s  = trim_stop.map(str::to_owned);
-    let split_by_s   = split_by.map(str::to_owned);
-
-    // key: (t1, t2) -> tag_val -> count  (tag_val = "" when no split_by)
-    type TagMap   = AHashMap<(String, String), AHashMap<String, u64>>;
-    type NamesMap = AHashMap<(String, String), (String, String)>;
-
-    let (tag_map, mut names): (TagMap, NamesMap) = batches
-        .into_par_iter()
-        .fold(
-            || (TagMap::new(), NamesMap::new()),
-            |(mut tag_map, mut names), batch| {
-                for (n1, s1, n2, s2) in batch {
-                    let t1 = trim_sequence(
-                        &s1,
-                        trim_start_s.as_deref(),
-                        trim_stop_s.as_deref(),
-                        trim_length,
-                    );
-                    let t2 = trim_sequence(
-                        &s2,
-                        trim_start_s.as_deref(),
-                        trim_stop_s.as_deref(),
-                        trim_length,
-                    );
-                    if t1.is_empty() || t2.is_empty() {
-                        continue;
-                    }
-                    let tag_val = split_by_s
-                        .as_deref()
-                        .map(|tag| extract_tag(&n1, tag).to_owned())
-                        .unwrap_or_default();
-                    let key = (t1.to_owned(), t2.to_owned());
-                    *tag_map.entry(key.clone()).or_default().entry(tag_val).or_insert(0) += 1;
-                    names.entry(key).or_insert((n1, n2));
-                }
-                (tag_map, names)
-            },
-        )
-        .reduce(
-            || (TagMap::new(), NamesMap::new()),
-            |(mut ta, mut na), (tb, nb)| {
-                for (key, tvals) in tb {
-                    let e = ta.entry(key).or_default();
-                    for (tv, cnt) in tvals {
-                        *e.entry(tv).or_insert(0) += cnt;
-                    }
-                }
-                for (k, v) in nb {
-                    na.entry(k).or_insert(v);
-                }
-                (ta, na)
-            },
-        );
-
-    let has_split = split_by.is_some();
-    let mut result: Vec<CountEntry> = tag_map
-        .into_iter()
-        .map(|(key, tvals)| {
-            let count: u64 = tvals.values().sum();
-            let (n1, n2) = names.remove(&key).unwrap_or_default();
-            let tag_counts = if has_split { tvals } else { AHashMap::new() };
-            CountEntry {
-                r1: key.0,
-                r2: Some(key.1),
-                count,
-                tag_counts,
-                r1_name: n1,
-                r2_name: Some(n2),
-            }
-        })
-        .collect();
-
-    result.sort_unstable_by(|a, b| b.count.cmp(&a.count));
-    Ok(result)
+    Ok(map)
 }
 
 
@@ -398,111 +360,24 @@ fn count_single(
     trim_stop: Option<&str>,
     trim_length: Option<usize>,
     split_by: Option<&str>,
-) -> io::Result<Vec<CountEntry>> {
+) -> io::Result<CountMap> {
     eprintln!("Counting single-end reads: {r1_path}");
-    let mut processed = 0u64;
 
-    // --- Reader thread: reads records and sends batches via channel ---
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<(String, String)>>(16);
-    let r1_owned = r1_path.to_owned();
+    let mut map: CountMap = AHashMap::with_capacity(4096);
+    let mut iter = FastqIter::new(open_reader(r1_path)?);
 
-    let reader = std::thread::spawn(move || -> io::Result<()> {
-        let mut iter = FastqIter::new(open_reader(&r1_owned)?);
-        let mut batch: Vec<(String, String)> = Vec::with_capacity(BATCH_SIZE);
-        while let Some(rec) = iter.next_record() {
-            batch.push(rec);
-            if batch.len() >= BATCH_SIZE {
-                if tx
-                    .send(std::mem::replace(
-                        &mut batch,
-                        Vec::with_capacity(BATCH_SIZE),
-                    ))
-                    .is_err()
-                {
-                    break;
-                }
-            }
+    while let Some((name, seq)) = iter.next_record() {
+        validate_record(&seq, &name, "R1");
+        let t1 = trim_sequence(&seq, trim_start, trim_stop, trim_length);
+        if t1.is_empty() {
+            continue;
         }
-        if !batch.is_empty() {
-            let _ = tx.send(batch);
-        }
-        Ok(())
-    });
+        let ann = extract_annotation(&name, split_by);
+        let key = build_key(t1, "", ann);
+        update_map(&mut map, key, &name, "");
+    }
 
-    let batches: Vec<Vec<(String, String)>> = rx.iter().collect();
-    reader.join().unwrap()?;
-
-    // --- Worker pool: parallel fold over batches, then merge ---
-    let trim_start_s = trim_start.map(str::to_owned);
-    let trim_stop_s  = trim_stop.map(str::to_owned);
-    let split_by_s   = split_by.map(str::to_owned);
-
-    // key: seq -> tag_val -> count  (tag_val = "" when no split_by)
-    type TagMap   = AHashMap<String, AHashMap<String, u64>>;
-    type NamesMap = AHashMap<String, String>;
-
-    let (tag_map, mut names): (TagMap, NamesMap) = batches
-        .into_par_iter()
-        .fold(
-            || (TagMap::new(), NamesMap::new()),
-            |(mut tag_map, mut names), batch| {
-                for (name, seq) in batch {
-                    let t = trim_sequence(
-                        &seq,
-                        trim_start_s.as_deref(),
-                        trim_stop_s.as_deref(),
-                        trim_length,
-                    );
-                    if t.is_empty() {
-                        continue;
-                    }
-                    let tag_val = split_by_s
-                        .as_deref()
-                        .map(|tag| extract_tag(&name, tag).to_owned())
-                        .unwrap_or_default();
-                    let key = t.to_owned();
-                    *tag_map.entry(key.clone()).or_default().entry(tag_val).or_insert(0) += 1;
-                    names.entry(key).or_insert(name);
-                }
-                (tag_map, names)
-            },
-        )
-        .reduce(
-            || (TagMap::new(), NamesMap::new()),
-            |(mut ta, mut na), (tb, nb)| {
-                for (seq, tvals) in tb {
-                    let e = ta.entry(seq).or_default();
-                    for (tv, cnt) in tvals {
-                        *e.entry(tv).or_insert(0) += cnt;
-                    }
-                }
-                for (k, v) in nb {
-                    na.entry(k).or_insert(v);
-                }
-                (ta, na)
-            },
-        );
-
-    let has_split = split_by.is_some();
-    let mut result: Vec<CountEntry> = tag_map
-        .into_iter()
-        .map(|(seq, tvals)| {
-            let count: u64 = tvals.values().sum();
-            let n = names.remove(&seq).unwrap_or_default();
-            let tag_counts = if has_split { tvals } else { AHashMap::new() };
-            CountEntry {
-                r1: seq,
-                r2: None,
-                count,
-                tag_counts,
-                r1_name: n,
-                r2_name: None,
-            }
-        })
-        .collect();
-
-    result.sort_unstable_by(|a, b| b.count.cmp(&a.count));
-    Ok(result)
+    Ok(map)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -510,98 +385,50 @@ fn count_single(
 ////////////////////////////////////////////////////////////////////////////////
 
 
-fn write_count_tsv(
+fn write_long_tsv(
     mut w: Box<dyn Write>,
-    entries: &[CountEntry],
-    split_by: Option<&str>,
+    map: CountMap,
     paired: bool,
+    sort_by: SortBy,
 ) -> io::Result<()> {
+    let total: u64 = map.values().map(|e| e.count).sum();
 
-    if let Some(tag_name) = split_by {
-        // Collect all unique tag values across all entries, sorted.
-        let mut all_tags: Vec<String> = {
-            let mut set = std::collections::HashSet::new();
-            for e in entries {
-                for k in e.tag_counts.keys() {
-                    set.insert(k.clone());
-                }
-            }
-            let mut v: Vec<String> = set.into_iter().collect();
-            v.sort();
-            v
-        };
-
-        // Per-tag-value totals for frequency denominators.
-        let mut tag_totals: AHashMap<&str, u64> = AHashMap::new();
-        for e in entries {
-            for (tv, &cnt) in &e.tag_counts {
-                *tag_totals.entry(tv.as_str()).or_insert(0) += cnt;
-            }
-        }
-
-        // Header
-        let mut header: Vec<String> = if paired {
-            vec!["R1".into(), "R2".into()]
-        } else {
-            vec!["R1".into()]
-        };
-        for tv in &all_tags {
-            header.push(format!("Count ({}={})", tag_name, tv));
-            header.push(format!("Frequency ({}={})", tag_name, tv));
-        }
-        if paired {
-            header.extend(["R1 Name".into(), "R2 Name".into()]);
-        } else {
-            header.push("R1 Name".into());
-        }
-        writeln!(w, "{}", header.join("\t"))?;
-
-        // Rows
-        for e in entries {
-            let mut row: Vec<String> = if paired {
-                vec![e.r1.clone(), e.r2.as_deref().unwrap_or("").to_owned()]
-            } else {
-                vec![e.r1.clone()]
-            };
-            for tv in &all_tags {
-                let cnt   = e.tag_counts.get(tv.as_str()).copied().unwrap_or(0);
-                let total = tag_totals.get(tv.as_str()).copied().unwrap_or(0);
-                let freq  = if total > 0 { cnt as f64 / total as f64 } else { 0.0 };
-                row.push(cnt.to_string());
-                row.push(format!("{:.6}", freq));
-            }
-            if paired {
-                row.push(e.r1_name.clone());
-                row.push(e.r2_name.as_deref().unwrap_or("").to_owned());
-            } else {
-                row.push(e.r1_name.clone());
-            }
-            writeln!(w, "{}", row.join("\t"))?;
-        }
+    // Header
+    if paired {
+        writeln!(w, "R1\tR2\tAnnotation\tCount\tFrequency\tR1 Name\tR2 Name")?;
     } else {
-        // No split_by — one Count + Frequency column for all reads.
-        let total: u64 = entries.iter().map(|e| e.count).sum();
+        writeln!(w, "R1\tAnnotation\tCount\tFrequency\tR1 Name")?;
+    }
+
+    // Collect, filter, sort
+    let mut entries: Vec<(Key, EntryValue)> = map
+        .into_iter()
+        .filter(|(_, v)| v.count > 0)
+        .collect();
+
+    match sort_by {
+        SortBy::CountDesc  => entries.sort_unstable_by(|a, b| b.1.count.cmp(&a.1.count)),
+        SortBy::CountAsc   => entries.sort_unstable_by(|a, b| a.1.count.cmp(&b.1.count)),
+        SortBy::Sequence   => entries.sort_unstable_by(|a, b| a.0.0.cmp(&b.0.0)),
+        SortBy::Annotation => entries.sort_unstable_by(|a, b| a.0.2.cmp(&b.0.2)),
+        SortBy::None       => {}
+    }
+
+    // Rows — one per key
+    for ((r1, r2, ann), val) in &entries {
+        let freq = if total > 0 { val.count as f64 / total as f64 } else { 0.0 };
         if paired {
-            writeln!(w, "R1\tR2\tCount\tFrequency\tR1 Name\tR2 Name")?;
-            for e in entries {
-                let freq = if total > 0 { e.count as f64 / total as f64 } else { 0.0 };
-                writeln!(
-                    w,
-                    "{}\t{}\t{}\t{:.6}\t{}\t{}",
-                    e.r1,
-                    e.r2.as_deref().unwrap_or(""),
-                    e.count,
-                    freq,
-                    e.r1_name,
-                    e.r2_name.as_deref().unwrap_or("")
-                )?;
-            }
+            writeln!(
+                w,
+                "{r1}\t{r2}\t{ann}\t{}\t{freq:.6}\t{}\t{}",
+                val.count, val.r1_name, val.r2_name
+            )?;
         } else {
-            writeln!(w, "R1\tCount\tFrequency\tR1 Name")?;
-            for e in entries {
-                let freq = if total > 0 { e.count as f64 / total as f64 } else { 0.0 };
-                writeln!(w, "{}\t{}\t{:.6}\t{}", e.r1, e.count, freq, e.r1_name)?;
-            }
+            writeln!(
+                w,
+                "{r1}\t{ann}\t{}\t{freq:.6}\t{}",
+                val.count, val.r1_name
+            )?;
         }
     }
     Ok(())
@@ -620,32 +447,33 @@ fn make_writer(path: &Option<String>) -> io::Result<Box<dyn Write>> {
 ////////////////////////////////////////////////////////////////////////////////
 
 fn run_count(args: &CountArgs) -> io::Result<()> {
-    if let Some(n) = args.threads {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(n)
-            .build_global()
-            .ok();
-    }
-
-    let trim_start = args.trim_start.as_deref();
-    let trim_stop  = args.trim_stop.as_deref();
+    let trim_start  = args.trim_start.as_deref();
+    let trim_stop   = args.trim_stop.as_deref();
     let trim_length = args.trim_length;
-    let split_by   = args.split_by.as_deref();
+    let split_by    = args.split_by.as_deref();
 
-    let entries = if let Some(r2_path) = &args.r2 {
-        count_paired(&args.r1, r2_path, trim_start, trim_stop, trim_length, split_by)?
-    } else {
-        count_single(&args.r1, trim_start, trim_stop, trim_length, split_by)?
+    let sort_by = match args.sort_by.as_str() {
+        "count-asc"  => SortBy::CountAsc,
+        "sequence"   => SortBy::Sequence,
+        "annotation" => SortBy::Annotation,
+        "none"       => SortBy::None,
+        _            => SortBy::CountDesc,
     };
 
-    let total: u64 = entries.iter().map(|e| e.count).sum();
+    let (map, paired) = if let Some(r2_path) = &args.r2 {
+        (count_paired(&args.r1, r2_path, trim_start, trim_stop, trim_length, split_by)?, true)
+    } else {
+        (count_single(&args.r1, trim_start, trim_stop, trim_length, split_by)?, false)
+    };
+
+    let total: u64 = map.values().map(|e| e.count).sum();
     eprintln!(
         "Done. {} unique sequences, {} total reads.",
-        entries.len(),
+        map.len(),
         total
     );
 
-    write_count_tsv(make_writer(&args.output)?, &entries, split_by, args.r2.is_some())?;
+    write_long_tsv(make_writer(&args.output)?, map, paired, sort_by)?;
 
     if let Some(p) = &args.output {
         eprintln!("Written to {p}");
@@ -853,38 +681,24 @@ fn run_params(args: &ParamsArgs) -> io::Result<()> {
                         "flags": ["--split-by"],
                         "type": "string",
                         "required": false,
-                        "description": "Split counts by this tag in read names (e.g. 'sgRNAid'). The tag must appear as |TAG=VALUE| in the read name. Produces one 'Count (TAG=VALUE)' + 'Frequency (TAG=VALUE)' column pair per unique value."
+                        "description": "Split counts by this tag in read names (e.g. 'sgRNAid'). The tag must appear as |TAG=VALUE| in the read name. The Annotation column will contain the tag value, or 'UNKNOWN' if absent."
                     },
                     {
-                        "name": "threads",
-                        "flags": ["--threads", "-t"],
-                        "type": "integer",
+                        "name": "sort_by",
+                        "flags": ["--sort-by"],
+                        "type": "string",
                         "required": false,
-                        "description": "Number of worker threads (default: all logical CPUs)."
+                        "default": "count-desc",
+                        "allowed_values": ["count-desc", "count-asc", "sequence", "annotation", "none"],
+                        "description": "Sort output rows by: count-desc (default), count-asc, sequence (R1 alphabetically), annotation, or none (hash order)."
                     }
                 ],
                 "output_format": {
                     "type": "tsv",
-                    "modes": [
-                        {
-                            "condition": "single-end, no split_by",
-                            "columns": ["R1", "Count", "Frequency", "R1 Name"]
-                        },
-                        {
-                            "condition": "paired-end, no split_by",
-                            "columns": ["R1", "R2", "Count", "Frequency", "R1 Name", "R2 Name"]
-                        },
-                        {
-                            "condition": "single-end, with split_by TAG",
-                            "columns": ["R1", "Count (TAG=<value>)", "Frequency (TAG=<value>)", "...", "R1 Name"],
-                            "note": "One Count + Frequency column pair per unique tag value, sorted alphabetically."
-                        },
-                        {
-                            "condition": "paired-end, with split_by TAG",
-                            "columns": ["R1", "R2", "Count (TAG=<value>)", "Frequency (TAG=<value>)", "...", "R1 Name", "R2 Name"],
-                            "note": "One Count + Frequency column pair per unique tag value, sorted alphabetically."
-                        }
-                    ]
+                    "layout": "long",
+                    "columns_single_end": ["R1", "Annotation", "Count", "Frequency", "R1 Name"],
+                    "columns_paired_end": ["R1", "R2", "Annotation", "Count", "Frequency", "R1 Name", "R2 Name"],
+                    "note": "One row per (R1, R2, Annotation) combination. Annotation is the split_by tag value, or 'ALL' if --split-by is not used. Only rows with Count > 0 are written."
                 }
             },
             {

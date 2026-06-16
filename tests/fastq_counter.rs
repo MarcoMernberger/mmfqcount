@@ -105,7 +105,7 @@ Command::cargo_bin("mmfqcount").unwrap()
     let (header, rows) = parse_tsv(&content);
 
     // Header check
-    assert_eq!(header, ["R1", "Count", "Frequency", "R1 Name"]);
+    assert_eq!(header, ["R1", "Annotation", "Count", "Frequency", "R1 Name"]);
 
     // Correct number of unique sequences
     assert_eq!(rows.len(), 3, "expected 3 unique sequences");
@@ -146,7 +146,7 @@ Command::cargo_bin("mmfqcount").unwrap()
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
 
-    assert_eq!(header, ["R1", "R2", "Count", "Frequency", "R1 Name", "R2 Name"]);
+    assert_eq!(header, ["R1", "R2", "Annotation", "Count", "Frequency", "R1 Name", "R2 Name"]);
     assert_eq!(rows.len(), 3, "expected 3 unique pairs");
 
     // Sorted descending
@@ -481,29 +481,31 @@ fn count_single_split_by() {
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
 
-    // Header should contain per-tag columns (sorted tag values: sgA, sgB)
-    assert!(header.contains(&"Count (sgRNAid=sgA)".to_owned()));
-    assert!(header.contains(&"Count (sgRNAid=sgB)".to_owned()));
-    assert!(header.contains(&"Frequency (sgRNAid=sgA)".to_owned()));
-    assert!(header.contains(&"Frequency (sgRNAid=sgB)".to_owned()));
+    // New long-format: one row per (R1, Annotation) combination.
+    // AAAA: 2× sgA + 1× sgB → two rows. CCCC: 1× sgB → one row.
+    assert_eq!(header, ["R1", "Annotation", "Count", "Frequency", "R1 Name"]);
+    assert_eq!(rows.len(), 3, "expected 3 rows (AAAA×sgA, AAAA×sgB, CCCC×sgB)");
 
-    assert_eq!(rows.len(), 2, "expected 2 unique sequences");
+    // total reads = 4
+    let aaaa_sga = rows
+        .iter()
+        .find(|r| get(&header, r, "R1") == "AAAA" && get(&header, r, "Annotation") == "sgA")
+        .expect("missing AAAA/sgA row");
+    assert_eq!(get(&header, aaaa_sga, "Count"), "2");
+    let freq_a: f64 = get(&header, aaaa_sga, "Frequency").parse().unwrap();
+    assert!((freq_a - 0.5).abs() < 1e-5, "freq_a={freq_a}");
 
-    // AAAA row: 2× sgA, 1× sgB
-    let aaaa = rows.iter().find(|r| get(&header, r, "R1") == "AAAA").unwrap();
-    assert_eq!(get(&header, aaaa, "Count (sgRNAid=sgA)"), "2");
-    assert_eq!(get(&header, aaaa, "Count (sgRNAid=sgB)"), "1");
+    let aaaa_sgb = rows
+        .iter()
+        .find(|r| get(&header, r, "R1") == "AAAA" && get(&header, r, "Annotation") == "sgB")
+        .expect("missing AAAA/sgB row");
+    assert_eq!(get(&header, aaaa_sgb, "Count"), "1");
+    let freq_b: f64 = get(&header, aaaa_sgb, "Frequency").parse().unwrap();
+    assert!((freq_b - 0.25).abs() < 1e-5, "freq_b={freq_b}");
 
-    // Frequency for sgA: 2 out of 2 sgA reads total → 1.0
-    let freq_a: f64 = get(&header, aaaa, "Frequency (sgRNAid=sgA)").parse().unwrap();
-    assert!((freq_a - 1.0).abs() < 1e-5, "freq_a={freq_a}");
-
-    // Frequency for sgB: AAAA gets 1 out of 2 sgB reads total → 0.5
-    let freq_b: f64 = get(&header, aaaa, "Frequency (sgRNAid=sgB)").parse().unwrap();
-    assert!((freq_b - 0.5).abs() < 1e-5, "freq_b={freq_b}");
-
-    // CCCC row: 0× sgA, 1× sgB
-    let cccc = rows.iter().find(|r| get(&header, r, "R1") == "CCCC").unwrap();
-    assert_eq!(get(&header, cccc, "Count (sgRNAid=sgA)"), "0");
-    assert_eq!(get(&header, cccc, "Count (sgRNAid=sgB)"), "1");
+    let cccc_sgb = rows
+        .iter()
+        .find(|r| get(&header, r, "R1") == "CCCC" && get(&header, r, "Annotation") == "sgB")
+        .expect("missing CCCC/sgB row");
+    assert_eq!(get(&header, cccc_sgb, "Count"), "1");
 }

@@ -551,7 +551,6 @@ dependencies = [
  "criterion",
  "flate2",
  "rand",
- "rayon",
  "serde_json",
  "tempfile",
 ]
