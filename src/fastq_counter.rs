@@ -303,13 +303,20 @@ fn update_map(map: &mut CountMap, key: Key, r1_name: &str, r2_name: &str) {
 }
 
 /// Sanity-check a raw sequence from the FASTQ parser.
-fn validate_record(seq: &str, name: &str, which: &str) {
-    assert!(!seq.is_empty(), "Empty {which} sequence for read: {name}");
-    assert!(
-        seq.len() < 10_000,
-        "Suspiciously long {which} sequence ({} bp) for read: {name}",
-        seq.len()
-    );
+fn validate_record(seq: &str, name: &str, which: &str) -> bool {
+    // is the record empty or freakishly long?
+    if seq.is_empty() {
+        eprintln!("Warning: Empty {which} sequence for read: {name}");
+        return false;
+    }
+    if seq.len() >= 10_000 {
+        eprintln!(
+            "Warning: Suspiciously long {which} sequence ({} bp) for read: {name}",
+            seq.len()
+        );
+        return false;
+    }
+    true
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -333,8 +340,9 @@ fn count_paired(
     loop {
         match (iter1.next_record(), iter2.next_record()) {
             (Some((n1, s1)), Some((n2, s2))) => {
-                validate_record(&s1, &n1, "R1");
-                validate_record(&s2, &n2, "R2");
+                if !validate_record(&s1, &n1, "R1") || !validate_record(&s2, &n2, "R2") {
+                    continue;
+                }
                 let t1 = trim_sequence(&s1, trim_start, trim_stop, trim_length);
                 let t2 = trim_sequence(&s2, trim_start, trim_stop, trim_length);
                 if t1.is_empty() || t2.is_empty() {
@@ -369,7 +377,9 @@ fn count_single(
     let mut iter = FastqIter::new(open_reader(r1_path)?);
 
     while let Some((name, seq)) = iter.next_record() {
-        validate_record(&seq, &name, "R1");
+        if !validate_record(&seq, &name, "R1") {
+            continue;
+        }
         let t1 = trim_sequence(&seq, trim_start, trim_stop, trim_length);
         if t1.is_empty() {
             continue;

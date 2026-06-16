@@ -82,6 +82,14 @@ const SE_ADAPTER_FASTQ: &str = "\
 @a4\nACGTAAAA\n+\nIIIIIIII\n\
 @a5\nNNNNAAAA\n+\nIIIIIIII\n";
 
+/// Single-end FASTQ with empty read
+const SE_FASTQ_EMPTY: &str = "\
+@read1\nAAAA\n+\nIIII\n\
+@read2\nAAAA\n+\nIIII\n\
+@read3\n\n+\nIIII\n\
+@read4\nAAAA\n+\nIIII\n\
+@read5\nGGGG\n+\nIIII\n";
+
 ////////////////////////////////////////////////////////////////////////////////
 // Tests
 ////////////////////////////////////////////////////////////////////////////////
@@ -177,6 +185,40 @@ fn count_paired_basic() {
     assert_eq!(get(&header, &rows[0], "R1"), "AAAA");
     assert_eq!(get(&header, &rows[0], "R2"), "TTTT");
     assert_eq!(get(&header, &rows[0], "Count"), "3");
+}
+
+#[test]
+fn count_single_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let r1 = write(dir.path(), "r1.fastq", SE_FASTQ_EMPTY);
+    let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
+
+    Command::cargo_bin("mmfqcount")
+        .unwrap()
+        .args(["count", "--r1", &r1, "--output", &out])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(&out).unwrap();
+    let (header, rows) = parse_tsv(&content);
+
+    // Header check
+    assert_eq!(
+        header,
+        ["R1", "Annotation", "Count", "Frequency", "R1 Name"]
+    );
+
+    // Correct number of unique sequences
+    assert_eq!(rows.len(), 2, "expected 0 unique sequences");
+
+    for row in &rows {
+        let name = get(&header, row, "R1 Name");
+        assert_ne!(
+            name,
+            "read3",
+            "read3 should not appear in output"
+        );
+    }
 }
 
 // Test 3: count — single-end, trim-start adapter
