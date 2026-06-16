@@ -270,6 +270,7 @@ fn count_single(
     let mut names: AHashMap<String, String> = AHashMap::new();
 
     eprintln!("Counting single-end reads: {r1_path}");
+    let mut processed = 0u64;
 
     while let Some((name, seq)) = iter.next_record() {
         let t = trim_sequence(&seq, trim_start, trim_stop, trim_length);
@@ -279,6 +280,10 @@ fn count_single(
         let key = t.to_owned();
         *counts.entry(key.clone()).or_insert(0) += 1;
         names.entry(key).or_insert(name);
+        processed += 1;
+        if processed % 1_000_000 == 0 {
+            eprintln!("Processed {processed} readsm, {} unique", counts.len());
+        }
     }
 
     let mut result: Vec<CountEntry> = counts
