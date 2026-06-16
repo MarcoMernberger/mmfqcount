@@ -1,5 +1,8 @@
 name: CI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   push:
   pull_request:
@@ -39,7 +42,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v7
 
       - name: Build flake
-        run: nix build
+        run: nix build --impure --show-trace
 
       - name: Flake check
         run: nix flake check

@@ -5,10 +5,11 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
-// Path to the compiled binary injected by Cargo at test-build time.
-const BIN: &str = env!("CARGO_BIN_EXE_fastq_counter");
+use tempfile;
+
+use assert_cmd::Command;
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Helpers
@@ -95,17 +96,16 @@ fn count_single_basic() {
     let r1 = write(dir.path(), "r1.fastq", SE_FASTQ);
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args(["count", "--r1", &r1, "--output", &out])
-        .status()
-        .unwrap();
-    assert!(status.success(), "binary exited with non-zero status");
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
 
     // Header check
-    assert_eq!(header, ["R1", "Count", "R1 Name"]);
+    assert_eq!(header, ["R1", "Count", "Frequency", "R1 Name"]);
 
     // Correct number of unique sequences
     assert_eq!(rows.len(), 3, "expected 3 unique sequences");
@@ -138,16 +138,15 @@ fn count_paired_basic() {
     let r2 = write(dir.path(), "r2.fastq", PE_R2);
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args(["count", "--r1", &r1, "--r2", &r2, "--output", &out])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
 
-    assert_eq!(header, ["R1", "R2", "Count", "R1 Name", "R2 Name"]);
+    assert_eq!(header, ["R1", "R2", "Count", "Frequency", "R1 Name", "R2 Name"]);
     assert_eq!(rows.len(), 3, "expected 3 unique pairs");
 
     // Sorted descending
@@ -171,16 +170,15 @@ fn count_single_trim_start() {
     let r1 = write(dir.path(), "r1.fastq", SE_ADAPTER_FASTQ);
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "count",
             "--r1", &r1,
             "--trim-start", "ACGT",
             "--output", &out,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -204,7 +202,7 @@ fn count_single_trim_start_and_length() {
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
     // trim adapter, then keep 4 bases → strips the "ACGT" prefix leaving payload
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "count",
             "--r1", &r1,
@@ -212,9 +210,8 @@ fn count_single_trim_start_and_length() {
             "--trim-length", "8",   // keep full 8-base trimmed sequence
             "--output", &out,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -239,16 +236,15 @@ fn count_single_trim_stop() {
     let r1 = write(dir.path(), "r1.fastq", fastq);
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "count",
             "--r1", &r1,
             "--trim-stop", "STOP",
             "--output", &out,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -274,7 +270,7 @@ fn match_single_basic() {
     let matched = dir.path().join("matched.tsv").to_string_lossy().into_owned();
     let unmatched = dir.path().join("unmatched.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "match",
             "--counts",     &counts,
@@ -284,9 +280,8 @@ fn match_single_basic() {
             "--output",     &matched,
             "--unmatched",  &unmatched,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     // Matched output
     let mc = fs::read_to_string(&matched).unwrap();
@@ -296,18 +291,18 @@ fn match_single_basic() {
     assert_eq!(mr.len(), 2);
 
     // Extra columns appended
-    assert!(mh.contains(&"Read Count".to_owned()));
+    assert!(mh.contains(&"Count".to_owned()));
     assert!(mh.contains(&"Frequency".to_owned()));
 
     // seq_A: count 3 out of 5 total → frequency 0.6
     let seq_a = mr.iter().find(|r| get(&mh, r, "Name") == "seq_A").unwrap();
-    assert_eq!(get(&mh, seq_a, "Read Count"), "3");
+    assert_eq!(get(&mh, seq_a, "Count"), "3");
     let freq: f64 = get(&mh, seq_a, "Frequency").parse().unwrap();
     assert!((freq - 0.6).abs() < 1e-5, "frequency should be ~0.6, got {freq}");
 
     // seq_G: count 1 → frequency 0.2
     let seq_g = mr.iter().find(|r| get(&mh, r, "Name") == "seq_G").unwrap();
-    assert_eq!(get(&mh, seq_g, "Read Count"), "1");
+    assert_eq!(get(&mh, seq_g, "Count"), "1");
 
     // Unmatched output
     let uc = fs::read_to_string(&unmatched).unwrap();
@@ -334,7 +329,7 @@ fn match_paired_basic() {
     let matched = dir.path().join("matched.tsv").to_string_lossy().into_owned();
     let unmatched = dir.path().join("unmatched.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "match",
             "--counts",     &counts,
@@ -345,16 +340,15 @@ fn match_paired_basic() {
             "--output",     &matched,
             "--unmatched",  &unmatched,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let mc = fs::read_to_string(&matched).unwrap();
     let (mh, mr) = parse_tsv(&mc);
     assert_eq!(mr.len(), 2);
 
     let pair_a = mr.iter().find(|r| get(&mh, r, "Name") == "pair_A").unwrap();
-    assert_eq!(get(&mh, pair_a, "Read Count"), "3");
+    assert_eq!(get(&mh, pair_a, "Count"), "3");
     let freq: f64 = get(&mh, pair_a, "Frequency").parse().unwrap();
     assert!((freq - 0.6).abs() < 1e-5);
 
@@ -379,7 +373,7 @@ fn match_zero_count_predefined() {
     let predefined = write(dir.path(), "pred.tsv", pred_tsv);
     let matched = dir.path().join("matched.tsv").to_string_lossy().into_owned();
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "match",
             "--counts",     &counts,
@@ -388,16 +382,15 @@ fn match_zero_count_predefined() {
             "--id-col",     "Name",
             "--output",     &matched,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let mc = fs::read_to_string(&matched).unwrap();
     let (mh, mr) = parse_tsv(&mc);
 
     // Both rows present; ZZZZ has count 0 and frequency 0
     let seq_z = mr.iter().find(|r| get(&mh, r, "Name") == "seq_Z").unwrap();
-    assert_eq!(get(&mh, seq_z, "Read Count"), "0");
+    assert_eq!(get(&mh, seq_z, "Count"), "0");
     let freq: f64 = get(&mh, seq_z, "Frequency").parse().unwrap();
     assert_eq!(freq, 0.0);
 }
@@ -412,10 +405,10 @@ fn count_single_all_identical() {
     let r1 = write(dir.path(), "r1.fastq", fastq);
     let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
 
-    Command::new(BIN)
+    Command::cargo_bin("mmfqcount").unwrap()
         .args(["count", "--r1", &r1, "--output", &out])
-        .status()
-        .unwrap();
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -445,15 +438,14 @@ fn count_single_gzip() {
         enc.finish().unwrap();
     }
 
-    let status = Command::new(BIN)
+Command::cargo_bin("mmfqcount").unwrap()
         .args([
             "count",
             "--r1",    gz_path.to_str().unwrap(),
             "--output", &out,
         ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .assert()
+        .success();
 
     let content = fs::read_to_string(&out).unwrap();
     let (header, rows) = parse_tsv(&content);
@@ -462,4 +454,56 @@ fn count_single_gzip() {
     assert_eq!(rows.len(), 3);
     assert_eq!(get(&header, &rows[0], "R1"), "AAAA");
     assert_eq!(get(&header, &rows[0], "Count"), "3");
+}
+
+// Test 11: count — single-end, --split-by tag
+
+#[test]
+fn count_single_split_by() {
+    // Reads carry |sgRNAid=X| tags in read names.
+    // AAAA: 2× sgA, 1× sgB  → total 3
+    // CCCC: 1× sgB           → total 1
+    let fastq = "\
+@read1|sgRNAid=sgA\nAAAA\n+\nIIII\n\
+@read2|sgRNAid=sgA\nAAAA\n+\nIIII\n\
+@read3|sgRNAid=sgB\nAAAA\n+\nIIII\n\
+@read4|sgRNAid=sgB\nCCCC\n+\nIIII\n";
+
+    let dir = tempfile::tempdir().unwrap();
+    let r1  = write(dir.path(), "r1.fastq", fastq);
+    let out = dir.path().join("out.tsv").to_string_lossy().into_owned();
+
+    Command::cargo_bin("mmfqcount").unwrap()
+        .args(["count", "--r1", &r1, "--split-by", "sgRNAid", "--output", &out])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(&out).unwrap();
+    let (header, rows) = parse_tsv(&content);
+
+    // Header should contain per-tag columns (sorted tag values: sgA, sgB)
+    assert!(header.contains(&"Count (sgRNAid=sgA)".to_owned()));
+    assert!(header.contains(&"Count (sgRNAid=sgB)".to_owned()));
+    assert!(header.contains(&"Frequency (sgRNAid=sgA)".to_owned()));
+    assert!(header.contains(&"Frequency (sgRNAid=sgB)".to_owned()));
+
+    assert_eq!(rows.len(), 2, "expected 2 unique sequences");
+
+    // AAAA row: 2× sgA, 1× sgB
+    let aaaa = rows.iter().find(|r| get(&header, r, "R1") == "AAAA").unwrap();
+    assert_eq!(get(&header, aaaa, "Count (sgRNAid=sgA)"), "2");
+    assert_eq!(get(&header, aaaa, "Count (sgRNAid=sgB)"), "1");
+
+    // Frequency for sgA: 2 out of 2 sgA reads total → 1.0
+    let freq_a: f64 = get(&header, aaaa, "Frequency (sgRNAid=sgA)").parse().unwrap();
+    assert!((freq_a - 1.0).abs() < 1e-5, "freq_a={freq_a}");
+
+    // Frequency for sgB: AAAA gets 1 out of 2 sgB reads total → 0.5
+    let freq_b: f64 = get(&header, aaaa, "Frequency (sgRNAid=sgB)").parse().unwrap();
+    assert!((freq_b - 0.5).abs() < 1e-5, "freq_b={freq_b}");
+
+    // CCCC row: 0× sgA, 1× sgB
+    let cccc = rows.iter().find(|r| get(&header, r, "R1") == "CCCC").unwrap();
+    assert_eq!(get(&header, cccc, "Count (sgRNAid=sgA)"), "0");
+    assert_eq!(get(&header, cccc, "Count (sgRNAid=sgB)"), "1");
 }

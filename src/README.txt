@@ -1,17 +1,17 @@
-Benutzung
+Usage
 
 
 Paired-end
 
-fastq_counter count \
+mmfqcount count \
   -1 sample_R1.fastq.gz \
   -2 sample_R2.fastq.gz \
   --output counts.tsv
 
 
-Mit Trimming:
+With Trimming:
 
-fastq_counter count \
+mmfqcount count \
   -1 sample_R1.fastq.gz \
   -2 sample_R2.fastq.gz \
   --trim-start ATGCGT \
@@ -22,14 +22,14 @@ fastq_counter count \
 
 Single-end
 
-fastq_counter count \
+mmfqcount count \
   -1 sample_R1.fastq.gz \
   --output counts.tsv
 
 
-Predefined sequences matchen
+Predefined sequences matching
 
-fastq_counter match \
+mmfqcount match \
   --counts counts.tsv \
   --predefined sequences.tsv \
   --seq-col Sequence \
@@ -38,9 +38,9 @@ fastq_counter match \
   --unmatched unmatched.tsv
 
 
-Für paired matching mit R2-Spalte in der predefined-Datei:
+ paired matching with R2-Spalte in  predefined-file:
 
-fastq_counter match \
+mmfqcount match \
   --counts counts.tsv \
   --predefined sequences.tsv \
   --seq-col Sequence \
