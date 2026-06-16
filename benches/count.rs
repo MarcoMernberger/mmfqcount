@@ -119,15 +119,9 @@ fn bench_single_end(c: &mut Criterion) {
         write_fastq(&r1, n_reads, 150, 1000, 42);
 
         group.throughput(Throughput::Elements(n_reads as u64));
-        group.bench_with_input(
-            BenchmarkId::new("reads", n_reads),
-            &n_reads,
-            |b, _| {
-                b.iter_custom(|iters| {
-                    (0..iters).map(|_| run_count_single(&r1, &out)).sum()
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("reads", n_reads), &n_reads, |b, _| {
+            b.iter_custom(|iters| (0..iters).map(|_| run_count_single(&r1, &out)).sum());
+        });
     }
     group.finish();
 }
@@ -148,17 +142,9 @@ fn bench_paired_end(c: &mut Criterion) {
         write_fastq(&r2, n_reads, 150, 1000, 99);
 
         group.throughput(Throughput::Elements(n_reads as u64));
-        group.bench_with_input(
-            BenchmarkId::new("reads", n_reads),
-            &n_reads,
-            |b, _| {
-                b.iter_custom(|iters| {
-                    (0..iters)
-                        .map(|_| run_count_paired(&r1, &r2, &out))
-                        .sum()
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("reads", n_reads), &n_reads, |b, _| {
+            b.iter_custom(|iters| (0..iters).map(|_| run_count_paired(&r1, &r2, &out)).sum());
+        });
     }
     group.finish();
 }
@@ -200,17 +186,13 @@ fn bench_trim_start(c: &mut Criterion) {
         }
 
         group.throughput(Throughput::Elements(N as u64));
-        group.bench_with_input(
-            BenchmarkId::new("read_len", read_len),
-            &read_len,
-            |b, _| {
-                b.iter_custom(|iters| {
-                    (0..iters)
-                        .map(|_| run_count_single_trim(&r1, &out, ADAPTER))
-                        .sum()
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("read_len", read_len), &read_len, |b, _| {
+            b.iter_custom(|iters| {
+                (0..iters)
+                    .map(|_| run_count_single_trim(&r1, &out, ADAPTER))
+                    .sum()
+            });
+        });
     }
     group.finish();
 }

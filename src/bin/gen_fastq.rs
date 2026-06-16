@@ -6,7 +6,6 @@
 ///   gen_fastq --reads 1000000 --read-len 150 --num-seqs 500 --output r1.fastq.gz
 
 /// cargo run --release --bin gen_fastq --reads 5000000 --read-len 150 --num-seqs 10000 --output r1.fastq --output-r2 r2.fastq
-
 // for crierion: cargo bench
 // # Reports: target/criterion/index.html
 

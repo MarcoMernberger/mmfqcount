@@ -8,7 +8,6 @@ use std::sync::Arc;
 /// Explosion guard: panic if unique key count exceeds this.
 const MAX_UNIQUE_KEYS: usize = 9_999_999;
 
-
 ////////////////////////////////////////////////////////////////////////////////
 // CLI
 ////////////////////////////////////////////////////////////////////////////////
@@ -115,7 +114,6 @@ enum SortBy {
     None,
 }
 
-
 ////////////////////////////////////////////////////////////////////////////////
 // FASTQ I/O
 ////////////////////////////////////////////////////////////////////////////////
@@ -163,21 +161,26 @@ impl<R: BufRead> FastqIter<R> {
 
         // sequence
         self.line.clear();
-        self.reader.read_line(&mut self.line).expect("Truncated FASTQ: missing sequence");
+        self.reader
+            .read_line(&mut self.line)
+            .expect("Truncated FASTQ: missing sequence");
         let seq = self.line.trim_end().to_owned();
 
         // '+' separator
         self.line.clear();
-        self.reader.read_line(&mut self.line).expect("Truncated FASTQ: missing '+'");
+        self.reader
+            .read_line(&mut self.line)
+            .expect("Truncated FASTQ: missing '+'");
 
         // quality (discard)
         self.line.clear();
-        self.reader.read_line(&mut self.line).expect("Truncated FASTQ: missing quality");
+        self.reader
+            .read_line(&mut self.line)
+            .expect("Truncated FASTQ: missing quality");
 
         Some((name, seq))
     }
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Trimming
@@ -207,17 +210,12 @@ fn trim_sequence<'a>(
     }
 
     if let Some(n) = length {
-        let end = s
-            .char_indices()
-            .nth(n)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
+        let end = s.char_indices().nth(n).map(|(i, _)| i).unwrap_or(s.len());
         s = &s[..end];
     }
 
     s
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Count data structures
@@ -273,7 +271,11 @@ fn extract_annotation<'a>(name: &'a str, split_by: Option<&str>) -> &'a str {
     match split_by {
         Some(tag) => {
             let val = extract_tag(name, tag);
-            if val.is_empty() { "UNKNOWN" } else { val }
+            if val.is_empty() {
+                "UNKNOWN"
+            } else {
+                val
+            }
         }
         None => "ALL",
     }
@@ -288,7 +290,9 @@ fn build_key(t1: &str, t2: &str, ann: &str) -> Key {
 /// Panics if the number of unique keys would exceed `MAX_UNIQUE_KEYS`.
 fn update_map(map: &mut CountMap, key: Key, r1_name: &str, r2_name: &str) {
     if map.len() >= MAX_UNIQUE_KEYS && !map.contains_key(&key) {
-        panic!("Key explosion: >{MAX_UNIQUE_KEYS} unique (R1, R2, Annotation) combinations detected");
+        panic!(
+            "Key explosion: >{MAX_UNIQUE_KEYS} unique (R1, R2, Annotation) combinations detected"
+        );
     }
     let entry = map.entry(key).or_insert_with(|| EntryValue {
         count: 0,
@@ -307,7 +311,6 @@ fn validate_record(seq: &str, name: &str, which: &str) {
         seq.len()
     );
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Paired counting
@@ -349,7 +352,6 @@ fn count_paired(
     Ok(map)
 }
 
-
 ////////////////////////////////////////////////////////////////////////////////
 // Single-end counting
 ////////////////////////////////////////////////////////////////////////////////
@@ -384,7 +386,6 @@ fn count_single(
 // TSV output
 ////////////////////////////////////////////////////////////////////////////////
 
-
 fn write_long_tsv(
     mut w: Box<dyn Write>,
     map: CountMap,
@@ -401,22 +402,24 @@ fn write_long_tsv(
     }
 
     // Collect, filter, sort
-    let mut entries: Vec<(Key, EntryValue)> = map
-        .into_iter()
-        .filter(|(_, v)| v.count > 0)
-        .collect();
+    let mut entries: Vec<(Key, EntryValue)> =
+        map.into_iter().filter(|(_, v)| v.count > 0).collect();
 
     match sort_by {
-        SortBy::CountDesc  => entries.sort_unstable_by(|a, b| b.1.count.cmp(&a.1.count)),
-        SortBy::CountAsc   => entries.sort_unstable_by(|a, b| a.1.count.cmp(&b.1.count)),
-        SortBy::Sequence   => entries.sort_unstable_by(|a, b| a.0.0.cmp(&b.0.0)),
-        SortBy::Annotation => entries.sort_unstable_by(|a, b| a.0.2.cmp(&b.0.2)),
-        SortBy::None       => {}
+        SortBy::CountDesc => entries.sort_unstable_by(|a, b| b.1.count.cmp(&a.1.count)),
+        SortBy::CountAsc => entries.sort_unstable_by(|a, b| a.1.count.cmp(&b.1.count)),
+        SortBy::Sequence => entries.sort_unstable_by(|a, b| a.0 .0.cmp(&b.0 .0)),
+        SortBy::Annotation => entries.sort_unstable_by(|a, b| a.0 .2.cmp(&b.0 .2)),
+        SortBy::None => {}
     }
 
     // Rows — one per key
     for ((r1, r2, ann), val) in &entries {
-        let freq = if total > 0 { val.count as f64 / total as f64 } else { 0.0 };
+        let freq = if total > 0 {
+            val.count as f64 / total as f64
+        } else {
+            0.0
+        };
         if paired {
             writeln!(
                 w,
@@ -424,11 +427,7 @@ fn write_long_tsv(
                 val.count, val.r1_name, val.r2_name
             )?;
         } else {
-            writeln!(
-                w,
-                "{r1}\t{ann}\t{}\t{freq:.6}\t{}",
-                val.count, val.r1_name
-            )?;
+            writeln!(w, "{r1}\t{ann}\t{}\t{freq:.6}\t{}", val.count, val.r1_name)?;
         }
     }
     Ok(())
@@ -441,29 +440,41 @@ fn make_writer(path: &Option<String>) -> io::Result<Box<dyn Write>> {
     }
 }
 
-
 ////////////////////////////////////////////////////////////////////////////////
 // Count subcommand runner
 ////////////////////////////////////////////////////////////////////////////////
 
 fn run_count(args: &CountArgs) -> io::Result<()> {
-    let trim_start  = args.trim_start.as_deref();
-    let trim_stop   = args.trim_stop.as_deref();
+    let trim_start = args.trim_start.as_deref();
+    let trim_stop = args.trim_stop.as_deref();
     let trim_length = args.trim_length;
-    let split_by    = args.split_by.as_deref();
+    let split_by = args.split_by.as_deref();
 
     let sort_by = match args.sort_by.as_str() {
-        "count-asc"  => SortBy::CountAsc,
-        "sequence"   => SortBy::Sequence,
+        "count-asc" => SortBy::CountAsc,
+        "sequence" => SortBy::Sequence,
         "annotation" => SortBy::Annotation,
-        "none"       => SortBy::None,
-        _            => SortBy::CountDesc,
+        "none" => SortBy::None,
+        _ => SortBy::CountDesc,
     };
 
     let (map, paired) = if let Some(r2_path) = &args.r2 {
-        (count_paired(&args.r1, r2_path, trim_start, trim_stop, trim_length, split_by)?, true)
+        (
+            count_paired(
+                &args.r1,
+                r2_path,
+                trim_start,
+                trim_stop,
+                trim_length,
+                split_by,
+            )?,
+            true,
+        )
     } else {
-        (count_single(&args.r1, trim_start, trim_stop, trim_length, split_by)?, false)
+        (
+            count_single(&args.r1, trim_start, trim_stop, trim_length, split_by)?,
+            false,
+        )
     };
 
     let total: u64 = map.values().map(|e| e.count).sum();
@@ -480,7 +491,6 @@ fn run_count(args: &CountArgs) -> io::Result<()> {
     }
     Ok(())
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // TSV reader
@@ -512,7 +522,6 @@ fn col_idx(header: &[String], name: &str) -> io::Result<usize> {
         )
     })
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Match subcommand runner
@@ -579,13 +588,7 @@ fn run_match(args: &MatchArgs) -> io::Result<()> {
         } else {
             0.0
         };
-        writeln!(
-            matched_writer,
-            "{}\t{}\t{:.6}",
-            row.join("\t"),
-            count,
-            freq
-        )?;
+        writeln!(matched_writer, "{}\t{}\t{:.6}", row.join("\t"), count, freq)?;
         matched_keys.insert(key);
     }
 
@@ -616,7 +619,6 @@ fn run_match(args: &MatchArgs) -> io::Result<()> {
     );
     Ok(())
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Params subcommand
@@ -779,8 +781,8 @@ fn run_params(args: &ParamsArgs) -> io::Result<()> {
         ]
     });
 
-    let json_str = serde_json::to_string_pretty(&doc)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let json_str =
+        serde_json::to_string_pretty(&doc).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     match &args.output {
         Some(path) => {
@@ -792,7 +794,6 @@ fn run_params(args: &ParamsArgs) -> io::Result<()> {
     }
     Ok(())
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Entry point
